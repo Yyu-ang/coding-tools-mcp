@@ -17,6 +17,10 @@ def _new_secret() -> str:
     return uuid4().hex + uuid4().hex
 
 
+def _new_oauth_client_id() -> str:
+    return f"coding-tools-{uuid4().hex}"
+
+
 @dataclass
 class TunnelConfig:
     type: str = "frp"
@@ -37,6 +41,14 @@ class AuthConfig:
     type: str = "oauth"
     oauth_password: str = field(default_factory=_new_secret)
     oauth_token_secret: str = field(default_factory=_new_secret)
+    # Dynamic registration remains the default. When enabled, the desktop client
+    # pre-registers a stable public OAuth client (PKCE, no client secret) so
+    # clients that support user-defined OAuth credentials can reuse one client_id.
+    oauth_fixed_client: bool = False
+    oauth_client_id: str = field(default_factory=_new_oauth_client_id)
+    # Comma-separated exact redirect URIs. Static OAuth clients need their
+    # callback URI registered in advance; DCR clients provide this automatically.
+    oauth_redirect_uris: str = ""
     bearer_token: str = field(default_factory=_new_secret)
 
 
