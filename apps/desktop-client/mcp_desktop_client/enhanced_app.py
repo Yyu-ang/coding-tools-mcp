@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QCheckBox, QGroupBox, QLabel, QLineEdit, QPushButton
 
 from . import app as app_module
 from .app import MainWindow as BaseMainWindow
@@ -11,7 +11,7 @@ from .models import WorkspaceProfile
 class MainWindow(BaseMainWindow):
     """Desktop window with persistent OAuth and a fixed-client option."""
 
-    def _build_auth_group(self):  # type: ignore[no-untyped-def]
+    def _build_auth_group(self) -> QGroupBox:
         box = super()._build_auth_group()
 
         self.oauth_fixed_client = QCheckBox(
