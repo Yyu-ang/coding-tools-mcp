@@ -1,4 +1,4 @@
-from mcp_desktop_client.app import main
+from mcp_desktop_client.enhanced_app import main
 
 
 if __name__ == "__main__":

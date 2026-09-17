@@ -43,7 +43,7 @@ image = [
 
 [project.scripts]
 coding-tools-mcp = "coding_tools_mcp.server:main"
-coding-tools-mcp-desktop = "mcp_desktop_client.app:main"
+coding-tools-mcp-desktop = "mcp_desktop_client.enhanced_app:main"
 
 [tool.setuptools.packages.find]
 where = [".", "apps/desktop-client"]

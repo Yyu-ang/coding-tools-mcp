@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -25,6 +29,8 @@ OAUTH_RESPONSE_TYPES_SUPPORTED = ("code",)
 MAX_REDIRECT_URIS = 10
 MAX_REGISTERED_CLIENTS = 1_024
 MAX_PENDING_CODES = 256
+OAUTH_CLIENT_STORE_ENV = "CODING_TOOLS_MCP_OAUTH_CLIENT_STORE"
+OAUTH_CLIENT_STORE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -48,11 +54,119 @@ class OAuthClient:
 
 
 class OAuthClientRegistry:
-    """Thread-safe RFC 7591 client registry for one server process."""
+    """Thread-safe RFC 7591 client registry with optional durable storage.
 
-    def __init__(self) -> None:
+    The core server keeps its historical in-memory behavior unless
+    ``CODING_TOOLS_MCP_OAUTH_CLIENT_STORE`` is set. The desktop client sets that
+    variable to a per-workspace private JSON file so dynamic registrations and
+    already-issued access tokens survive desktop/server restarts.
+
+    Only the digest of a confidential client's secret is written to disk. The
+    one-time plaintext client_secret returned by dynamic registration is never
+    persisted.
+    """
+
+    def __init__(self, store_path: str | os.PathLike[str] | None = None) -> None:
+        configured_path = store_path
+        if configured_path is None:
+            configured_path = os.environ.get(OAUTH_CLIENT_STORE_ENV) or None
+        self._store_path = Path(configured_path).expanduser() if configured_path else None
         self._clients: dict[str, OAuthClient] = {}
         self._lock = threading.Lock()
+        self._load_store()
+
+    def _load_store(self) -> None:
+        path = self._store_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict) or payload.get("version") != OAUTH_CLIENT_STORE_VERSION:
+            return
+        records = payload.get("clients")
+        if not isinstance(records, list):
+            return
+
+        loaded: dict[str, OAuthClient] = {}
+        for record in records[:MAX_REGISTERED_CLIENTS]:
+            if not isinstance(record, dict):
+                continue
+            client_id = record.get("client_id")
+            method = record.get("token_endpoint_auth_method")
+            if not isinstance(client_id, str) or not client_id or len(client_id) > 512:
+                continue
+            if method not in {"none", "client_secret_post", "client_secret_basic"}:
+                continue
+            try:
+                redirects = validate_redirect_uris(record.get("redirect_uris"))
+            except ValueError:
+                continue
+            secret_digest = record.get("secret_digest")
+            if secret_digest is not None and not isinstance(secret_digest, str):
+                continue
+            issued_at = record.get("issued_at")
+            if not isinstance(issued_at, int):
+                issued_at = int(time.time())
+            loaded[client_id] = OAuthClient(
+                client_id=client_id,
+                redirect_uris=redirects,
+                token_endpoint_auth_method=method,
+                client_name=_optional_text(record.get("client_name"), 200),
+                secret_digest=secret_digest,
+                issued_at=issued_at,
+            )
+        self._clients = loaded
+
+    def _persist_locked(self) -> None:
+        path = self._store_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except (OSError, NotImplementedError):
+            pass
+
+        payload = {
+            "version": OAUTH_CLIENT_STORE_VERSION,
+            "clients": [
+                {
+                    "client_id": client.client_id,
+                    "redirect_uris": list(client.redirect_uris),
+                    "token_endpoint_auth_method": client.token_endpoint_auth_method,
+                    "client_name": client.client_name,
+                    "secret_digest": client.secret_digest,
+                    "issued_at": client.issued_at,
+                }
+                for client in sorted(self._clients.values(), key=lambda item: item.client_id)
+            ],
+        }
+        encoded = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        temporary_path = Path(temporary_name)
+        try:
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(descriptor, 0o600)
+            except (OSError, NotImplementedError):
+                pass
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                descriptor = -1
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+            try:
+                path.chmod(0o600)
+            except (OSError, NotImplementedError):
+                pass
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary_path.exists():
+                temporary_path.unlink()
 
     def add_preregistered(
         self,
@@ -71,6 +185,7 @@ class OAuthClientRegistry:
         )
         with self._lock:
             self._clients[client_id] = client
+            self._persist_locked()
 
     def register(self, metadata: dict[str, Any]) -> dict[str, Any]:
         redirects = validate_redirect_uris(metadata.get("redirect_uris"))
@@ -108,6 +223,7 @@ class OAuthClientRegistry:
                 secret_digest=_secret_digest(client_secret) if client_secret is not None else None,
             )
             self._clients[client_id] = client
+            self._persist_locked()
         response: dict[str, Any] = {
             "client_id": client.client_id,
             "client_id_issued_at": client.issued_at,
