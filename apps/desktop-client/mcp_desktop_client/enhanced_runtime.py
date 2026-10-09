@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .bundled_runtime import frozen_server_command
 from .i18n import tr
 from .models import RuntimeStatus, WorkspaceProfile
 from .runtime import RuntimeManager
@@ -25,6 +26,14 @@ class DesktopRuntimeManager(RuntimeManager):
     session/state evidence first and only falls back to a system-wide port scan
     when recovery really needs it.
     """
+
+    def _resolve_command(self, profile: WorkspaceProfile) -> list[str]:
+        # Keep explicit operator overrides working. A frozen desktop must never
+        # silently pick a stale coding-tools-mcp or uvx from PATH.
+        if profile.runtime.runtime_command.strip():
+            return super()._resolve_command(profile)
+        bundled = frozen_server_command()
+        return bundled if bundled is not None else super()._resolve_command(profile)
 
     def _runtime_args(self, profile: WorkspaceProfile, env: dict[str, str]) -> list[str]:
         for name in (
