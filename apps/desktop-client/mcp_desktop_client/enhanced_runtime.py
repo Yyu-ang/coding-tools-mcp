@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from typing import Any
+
 from .bundled_runtime import frozen_server_command
 from .i18n import tr
 from .models import RuntimeStatus, WorkspaceProfile
@@ -34,6 +39,14 @@ class DesktopRuntimeManager(RuntimeManager):
             return super()._resolve_command(profile)
         bundled = frozen_server_command()
         return bundled if bundled is not None else super()._resolve_command(profile)
+
+    def _detached_popen_kwargs(self) -> dict[str, Any]:
+        flags = super()._detached_popen_kwargs()
+        if os.name == "nt" and getattr(sys, "frozen", False):
+            # A GUI app starting a console-subsystem server must not flash a
+            # new terminal window. The server still writes to its log files.
+            flags["creationflags"] = int(flags.get("creationflags", 0)) | subprocess.CREATE_NO_WINDOW
+        return flags
 
     def _runtime_args(self, profile: WorkspaceProfile, env: dict[str, str]) -> list[str]:
         for name in (
