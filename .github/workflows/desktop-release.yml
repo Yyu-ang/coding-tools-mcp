@@ -14,7 +14,12 @@ on:
       - "pyproject.toml"
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["desktop-v*"]
+    paths:
+      # A change to this explicit request file triggers one verified release.
+      # Path filters do not apply to tag pushes.
+      - "apps/desktop-client/packaging/release-request.txt"
 
 permissions:
   contents: read
@@ -80,21 +85,52 @@ jobs:
   release:
     name: Publish fork-only desktop release
     needs: windows
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/desktop-v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v7.0.1
         with:
           name: CodingToolsMCP-Desktop-Windows-x64
           path: release-assets
-      - name: Create desktop GitHub Release
+      - name: Resolve and verify requested desktop version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\\r\\n' < apps/desktop-client/packaging/desktop-version.txt)"
+          tag="desktop-v${version}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" == "$tag" ]] || { echo "Tag and version mismatch" >&2; exit 1; }
+          else
+            requested="$(tr -d '\\r\\n' < apps/desktop-client/packaging/release-request.txt)"
+            [[ "$requested" == "$tag" ]] || { echo "Release request mismatch: $requested != $tag" >&2; exit 1; }
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Create tagged GitHub Release with tested binaries
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" release-assets/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "Coding Tools MCP Desktop $GITHUB_REF_NAME (Windows x64)" \
-            --notes "Fork-only Windows x64 desktop installer and portable build. Unsigned executables; Python is bundled. Upstream PyPI/npm releases are unaffected."
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          args=(--repo "$GITHUB_REPOSITORY"
+                --title "Coding Tools MCP Desktop $RELEASE_TAG (Windows x64)"
+                --latest
+                --notes "Windows x64 installer and portable ZIP for this fork. Includes Python, PySide6 GUI and MCP Server. Existing workspace and OAuth configuration is kept on upgrade. Binaries are unsigned; Windows SmartScreen may warn. External cloudflared/FRP is not bundled. Upstream PyPI/npm release pipeline is unaffected.")
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            args+=(--verify-tag)
+          else
+            # gh release create also creates the tag. GITHUB_TOKEN tag pushes
+            # do not start a second workflow; this single CI job publishes once.
+            args+=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* "${args[@]}"
