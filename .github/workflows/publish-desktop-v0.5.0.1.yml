@@ -1,0 +1,58 @@
+name: publish-desktop-v0.5.0.1-draft
+
+# One-time release finalization. Reuse tested build artifacts; do not rebuild.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-desktop-v0.5.0.1.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: Attach tested binaries and publish existing draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CodingToolsMCP-Desktop-Windows-x64
+          run-id: 37879500368
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Finalize verified draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: desktop-v0.5.0.1
+          RELEASE_SHA: c9de56c62876f890eeb4179d135cdef063692b25
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup="release-assets/CodingToolsMCP_Desktop_0.5.0.1_x64_Setup.exe"
+          portable="release-assets/CodingToolsMCP_Desktop_0.5.0.1_x64_Portable.zip"
+          test -s "$setup"
+          test -s "$portable"
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\\\"$RELEASE_TAG\\\" and .draft==true) | .id" | head -n 1)"
+          if [[ -z "$release_id" ]]; then
+            echo "Expected existing draft for $RELEASE_TAG, refusing to create a duplicate release" >&2
+            exit 1
+          fi
+          echo "Uploading validated binaries to draft release $release_id"
+          gh release upload "$RELEASE_TAG" "$setup" "$portable" --clobber --repo "$GITHUB_REPOSITORY"
+          assets="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" --jq '.[].name')"
+          grep -Fxq "$(basename "$setup")" <<< "$assets"
+          grep -Fxq "$(basename "$portable")" <<< "$assets"
+          echo "Verified both assets; publishing the draft"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=false \
+            -f target_commitish="$RELEASE_SHA" \
+            -f name="Coding Tools MCP Desktop v0.5.0.1" \
+            -f body="Windows x64 desktop installer and portable ZIP. Includes Python, PySide6 desktop GUI, and MCP Server. No external Python/Conda/uv required. User Workspace and OAuth data is preserved on upgrade; cloudflared and FRP clients are not bundled. Unsigned executables may trigger Windows SmartScreen. This is a fork-only release: upstream and its PyPI/npm release pipeline remain unchanged." > published.json
+          jq -e '.draft == false and (.assets | length >= 2)' published.json >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha'
+          echo "Published release:"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url,assets,isDraft --jq '{url: .url, isDraft: .isDraft, assets: [.assets[].name]}'
