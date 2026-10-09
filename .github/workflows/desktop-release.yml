@@ -102,12 +102,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(tr -d '\\r\\n' < apps/desktop-client/packaging/desktop-version.txt)"
+          version="$(head -n 1 apps/desktop-client/packaging/desktop-version.txt)"
           tag="desktop-v${version}"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             [[ "$GITHUB_REF_NAME" == "$tag" ]] || { echo "Tag and version mismatch" >&2; exit 1; }
           else
-            requested="$(tr -d '\\r\\n' < apps/desktop-client/packaging/release-request.txt)"
+            requested="$(head -n 1 apps/desktop-client/packaging/release-request.txt)"
             [[ "$requested" == "$tag" ]] || { echo "Release request mismatch: $requested != $tag" >&2; exit 1; }
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

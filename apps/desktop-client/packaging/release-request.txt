@@ -1,1 +1,2 @@
 desktop-v0.5.0.1
+# Publish request 2026-10-09; verified installer build required.
